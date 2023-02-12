@@ -124,7 +124,7 @@ therfore respect file-name handlers specified via
 Return nil if the opam command fails.
 Return all output as string otherwise.
 
-If SWITCH is not nil, an option \"--swith=SWITCH\" is added.
+If SWITCH is not nil, an option \"--switch=SWITCH\" is added.
 If SEXP is t, option --sexp is added.
 All remaining arguments ARGS are added as arguments.
 
@@ -176,6 +176,9 @@ This function should not be called directly; see `opam-switch--root'."
 ;; [WARNING] The environment is not in sync with the current switch.
 ;;           You should run: eval $(opam env)
 
+(defvar opam-switch--local-switches nil
+  "The list of local switches.")
+
 (defun opam-switch--get-switches ()
   "Return all opam switches as list of strings."
   (let (opam-switches)
@@ -187,7 +190,15 @@ This function should not be called directly; see `opam-switch--root'."
       (forward-line)
       (while (re-search-forward "^.. *\\([^ ]*\\).*$" nil t)
         (push (match-string 1) opam-switches))
+      (setq opam-switch--local-switches (seq-filter 'file-name-absolute-p opam-switches))
       opam-switches)))
+
+(defun opam-switch--switch-to-local-hook ()
+  "Check if the CWD is associated with a local switch."
+  (let (cwd) (file-name-directory (expand-file-name buffer-file-name))
+       ;; assuming nested local switches are not allowed
+       (switch) (car (seq-filter (lambda (local-switch) (string-prefix-p local-switch cwd)) opam-switch--local-switches))
+       (opam-switch-set-switch switch)))
 
 (defvar opam-switch--switch-history nil
   "Minibuffer history list for `opam-switch--set-switch'.")
@@ -223,17 +234,16 @@ previously set opam switch and also which entry in the PATH
 environment variable in OPAM-ENV corresponds to the new switch.
 Therefore this function uses the following heuristic.  First all
 entries in variable `exec-path' that match `(opam-switch--root)' are deleted.
-Then, the first entry for PATH that maches `(opam-switch--root)' is added at the
+Then, the first entry for PATH that matches `(opam-switch--root)' is added at the
 front of variable `exec-path'."
-  (let ((new-bin-dir
-         (seq-find
-          (lambda (dir) (string-prefix-p (opam-switch--root) dir))
-          (parse-colon-path (cadr (assoc "PATH" opam-env))))))
+  (let ((new-bin-dir (expand-file-name "bin" (cadr (assoc "OPAM_SWITCH_PREFIX" opam-env)))))
     (unless new-bin-dir
-      (error "No opam-root directory in PATH"))
+      (error "No prefix in opam-env"))
     (mapc (lambda (x) (setenv (car x) (cadr x))) opam-env)
     (setq exec-path
-          (seq-remove (lambda (dir) (string-prefix-p (opam-switch--root) dir)) exec-path))
+          (seq-remove (lambda (dir) (seq-some (lambda (root-or-local) (string-prefix-p root-or-local dir))
+                                              (cons (opam-switch--root) opam-switch--local-switches)))
+                      exec-path))
     (push new-bin-dir exec-path)))
 
 (defun opam-switch--reset-env ()
@@ -296,6 +306,7 @@ not any other shells outside Emacs."
          "Command 'opam env %s' failed - probably because of invalid opam switch \"%s\""
          switch-name switch-name))
       (setq opam-env (car (read-from-string output-string)))
+      (unless opam-env (error "Empty opam-env"))
       (unless opam-switch--saved-env
         (opam-switch--save-current-env opam-env))
       (opam-switch--set-env opam-env)))
